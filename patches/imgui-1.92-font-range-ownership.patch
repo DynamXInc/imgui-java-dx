@@ -1,0 +1,29 @@
+diff --git a/imgui_draw.cpp b/imgui_draw.cpp
+--- a/imgui_draw.cpp
++++ b/imgui_draw.cpp
+@@ -3073,6 +3073,15 @@ ImFont* ImFontAtlas::AddFont(const ImFontConfig* font_cfg_in)
+ 
+     // Sanity check
+     // We don't round cfg.SizePixels yet as relative size of merged fonts are used afterwards.
++    if (font_cfg->GlyphRanges != NULL)
++    {
++        // JNI array pointers cease to be valid when registration returns.
++        // Own legacy preload ranges just as we already own source exclusion ranges.
++        int size = 0;
++        for (const ImWchar* p = font_cfg->GlyphRanges; p[0] != 0; p++, size++) {}
++        IM_ASSERT((size & 1) == 0 && "GlyphRanges[] size must be multiple of two!");
++        font_cfg->GlyphRanges = (ImWchar*)ImMemdup(font_cfg->GlyphRanges, sizeof(ImWchar) * (size + 1));
++    }
+     if (font_cfg->GlyphExcludeRanges != NULL)
+     {
+         int size = 0;
+@@ -3710,6 +3719,9 @@ void ImFontAtlasFontDestroySourceData(ImFontAtlas* atlas, ImFontConfig* src)
+     if (src->FontDataOwnedByAtlas)
+         IM_FREE(src->FontData);
+     src->FontData = NULL;
++    if (src->GlyphRanges)
++        IM_FREE((void*)src->GlyphRanges);
++    src->GlyphRanges = NULL;
+     if (src->GlyphExcludeRanges)
+         IM_FREE((void*)src->GlyphExcludeRanges);
+     src->GlyphExcludeRanges = NULL;

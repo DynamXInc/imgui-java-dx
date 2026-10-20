@@ -1,6 +1,8 @@
 package imgui.flag;
 
 
+
+
 /**
  * Flags for ImGui::BeginChild()
  * (Legacy: bit 0 must always correspond to ImGuiChildFlags_Border to be backward compatible with old API using 'bool border = false'.
@@ -12,6 +14,7 @@ package imgui.flag;
  *   - You may also use ImGuiChildFlags_AlwaysAutoResize to force an update even when child window is not in view.
  *     HOWEVER PLEASE UNDERSTAND THAT DOING SO WILL PREVENT BeginChild() FROM EVER RETURNING FALSE, disabling benefits of coarse clipping.
  */
+
 public final class ImGuiChildFlags {
     private ImGuiChildFlags() {
     }

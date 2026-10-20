@@ -3,6 +3,9 @@ package imgui.extension.implot;
 import imgui.ImVec4;
 import imgui.binding.ImGuiStructDestroyable;
 
+
+
+
 public final class ImPlotSpec extends ImGuiStructDestroyable {
     public ImPlotSpec() {
         super();

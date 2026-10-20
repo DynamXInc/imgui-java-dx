@@ -1,10 +1,18 @@
 package imgui;
 
 import imgui.binding.ImGuiStructDestroyable;
+
+
+
+
+
 import imgui.type.ImInt;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 /**
  * Load and rasterize multiple TTF/OTF fonts into a same texture. The font atlas will build a single texture holding:
@@ -17,24 +25,30 @@ import java.nio.ByteOrder;
  *  - Upload the pixels data into a texture within your graphics system (see imgui_impl_xxxx.cpp examples)
  *  - Call SetTexID(my_tex_id); and pass the pointer/identifier to your texture in a format natural to your graphics API.
  *    This value will be passed back to you during rendering to identify the texture. Read FAQ entry about ImTextureID for more details.
- * Common pitfalls:
- * - If you pass a 'glyph_ranges' array to AddFont*** functions, you need to make sure that your array persist up until the
- *   atlas is build (when calling GetTexData*** or Build()). We only copy the pointer, not the data.
- * - Important: By default, AddFontFromMemoryTTF() takes ownership of the data. Even though we are not writing to it, we will free the pointer on destruction.
- *   You can set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed,
- * - Even though many functions are suffixed with "TTF", OTF data is supported just as well.
- * - This is an old API and it is currently awkward for those and and various other reasons! We will address them in the future!
+ * Java font bytes and glyph ranges are copied into native-owned storage during registration.
+ * Uncompressed configuration data is copied independently for each atlas.
+ * TTF and OTF inputs are supported. Compressed inputs must be valid stb-compressed font data.
+ * A standalone atlas owns its native allocation. Contexts using it take over final native deletion;
+ * destroying their last reference invalidates the original owning Java wrapper.
  */
+
 public final class ImFontAtlas extends ImGuiStructDestroyable {
+    // Only owning wrappers participate: borrowed views must never acquire destruction rights.
+    private static final Map<ImFontAtlas, Boolean> OWNED_ATLASES = new WeakHashMap<>();
+    private static final ImFontAtlas[] NO_ATLASES = new ImFontAtlas[0];
+    private final boolean owned;
     private ByteBuffer alpha8pixels = null;
     private ByteBuffer rgba32pixels = null;
 
     public ImFontAtlas() {
         super();
+        owned = true;
+        OWNED_ATLASES.put(this, Boolean.TRUE);
     }
 
     public ImFontAtlas(final long ptr) {
         super(ptr);
+        owned = false;
     }
 
     @Override
@@ -42,13 +56,73 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         return nCreate();
     }
 
+    /** Destroys a detached owned atlas once. Context-owned and borrowed atlases cannot be freed here. */
+    @Override
+    public void destroy() {
+        if (!owned) {
+            throw new IllegalStateException("Cannot destroy a borrowed font atlas");
+        }
+        if (ptr == 0) {
+            return;
+        }
+        nDestroyAtlas();
+        invalidate();
+    }
+
+    private void invalidate() {
+        OWNED_ATLASES.remove(this);
+        ptr = 0;
+        alpha8pixels = null;
+        rgba32pixels = null;
+    }
+
+    static ImFontAtlas[] onContextDestroying(final long contextPtr) {
+        if (OWNED_ATLASES.isEmpty()) {
+            return NO_ATLASES;
+        }
+        ArrayList<ImFontAtlas> deleting = null;
+        for (final ImFontAtlas atlas : OWNED_ATLASES.keySet()) {
+            if (nContextDeletesAtlas(contextPtr, atlas.ptr)) {
+                if (deleting == null) {
+                    deleting = new ArrayList<>();
+                }
+                deleting.add(atlas);
+            }
+        }
+        return deleting == null ? NO_ATLASES : deleting.toArray(new ImFontAtlas[deleting.size()]);
+    }
+
+    static void onContextDestroyed(final ImFontAtlas[] atlases) {
+        for (final ImFontAtlas atlas : atlases) {
+            atlas.invalidate();
+        }
+    }
+
     /*JNI
         #include "_common.h"
+        #include "jni_font.h"
         #define THIS ((ImFontAtlas*)STRUCT_PTR)
 
         jmethodID jImFontAtlasCreateAlpha8PixelsMID;
         jmethodID jImFontAtlasCreateRgba32PixelsMID;
      */
+
+    private static native boolean nContextDeletesAtlas(long contextPtr, long atlasPtr); /*
+        ImGuiContext* context = (ImGuiContext*)contextPtr;
+        if (context == NULL || atlasPtr == 0) return false;
+        for (ImFontAtlas* atlas : context->FontAtlases)
+            if (atlas == (ImFontAtlas*)atlasPtr)
+                return atlas->RefCount == 1;
+        return false;
+    */
+
+    private native void nDestroyAtlas(); /*
+        if (THIS->Locked || THIS->RefCount != 0 || THIS->OwnerContext != NULL || THIS->DrawListSharedDatas.Size != 0) {
+            env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "Font atlas is still in use by a context or draw list");
+            return;
+        }
+        IM_DELETE(THIS);
+    */
 
     static native void nInit(); /*
         jclass jImFontAtlasClass = env->FindClass("imgui/ImFontAtlas");
@@ -57,406 +131,238 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
     */
 
     private native long nCreate(); /*
-        return (uintptr_t)(new ImFontConfig());
+        return (uintptr_t)IM_NEW(ImFontAtlas)();
     */
 
-    public ImFont addFont(final ImFontConfig imFontConfig) {
-        return new ImFont(nAddFont(imFontConfig.ptr));
+    /** Registers independent native copies of the configuration's data and ranges. */
+    public ImFont addFont(final ImFontConfig fontConfig) {
+        return new ImFont(nAddFont(configPointer(fontConfig, true)));
     }
 
-    private native long nAddFont(long imFontConfig); /*
-        return (uintptr_t)THIS->AddFont(reinterpret_cast<ImFontConfig*>(imFontConfig));
+    private native long nAddFont(long configPtr); /*
+        const ImFontConfig* source = (ImFontConfig*)configPtr;
+        ImFontConfig config;
+        if (!Jni::PrepareFontConfig(env, THIS, source, config)) return 0;
+        if (source->FontData == NULL || source->FontDataSize <= 0) {
+            env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Configuration has no font data");
+            return 0;
+        }
+        config.FontData = Jni::CopyFontData(env, source->FontData, source->FontDataSize);
+        if (config.FontData == NULL) return 0;
+        config.FontDataSize = source->FontDataSize;
+        // AddFont consumes the copy on success AND on loader-initialization failure.
+        return (uintptr_t)THIS->AddFont(&config);
     */
 
     public ImFont addFontDefault() {
-        return new ImFont(nAddFontDefault());
+        return addFontDefault(null);
     }
 
-    public ImFont addFontDefault(final ImFontConfig imFontConfig) {
-        return new ImFont(nAddFontDefault(imFontConfig.ptr));
+    public ImFont addFontDefault(final ImFontConfig fontConfig) {
+        return new ImFont(nAddFontDefault(configPointer(fontConfig, false), 0));
     }
 
-    private native long nAddFontDefault(); /*
-        return (uintptr_t)THIS->AddFontDefault();
-    */
-
-    private native long nAddFontDefault(long imFontConfig); /*
-        return (uintptr_t)THIS->AddFontDefault(reinterpret_cast<ImFontConfig*>(imFontConfig));
-    */
-
-    /**
-     * Embedded scalable (vector) default font — recommended at any higher size. (since imgui 1.92)
-     */
     public ImFont addFontDefaultVector() {
-        return new ImFont(nAddFontDefaultVector());
+        return addFontDefaultVector(null);
     }
 
-    /**
-     * Embedded scalable (vector) default font — recommended at any higher size. (since imgui 1.92)
-     */
-    public ImFont addFontDefaultVector(final ImFontConfig imFontConfig) {
-        return new ImFont(nAddFontDefaultVector(imFontConfig.ptr));
+    public ImFont addFontDefaultVector(final ImFontConfig fontConfig) {
+        return new ImFont(nAddFontDefault(configPointer(fontConfig, false), 1));
     }
 
-    private native long nAddFontDefaultVector(); /*
-        return (uintptr_t)THIS->AddFontDefaultVector();
-    */
-
-    private native long nAddFontDefaultVector(long imFontConfig); /*
-        return (uintptr_t)THIS->AddFontDefaultVector(reinterpret_cast<ImFontConfig*>(imFontConfig));
-    */
-
-    /**
-     * Embedded classic pixel-clean bitmap default font — recommended at size 13px with no scaling.
-     * (since imgui 1.92)
-     */
     public ImFont addFontDefaultBitmap() {
-        return new ImFont(nAddFontDefaultBitmap());
+        return addFontDefaultBitmap(null);
     }
 
-    /**
-     * Embedded classic pixel-clean bitmap default font — recommended at size 13px with no scaling.
-     * (since imgui 1.92)
-     */
-    public ImFont addFontDefaultBitmap(final ImFontConfig imFontConfig) {
-        return new ImFont(nAddFontDefaultBitmap(imFontConfig.ptr));
+    public ImFont addFontDefaultBitmap(final ImFontConfig fontConfig) {
+        return new ImFont(nAddFontDefault(configPointer(fontConfig, false), 2));
     }
 
-    private native long nAddFontDefaultBitmap(); /*
-        return (uintptr_t)THIS->AddFontDefaultBitmap();
-    */
-
-    private native long nAddFontDefaultBitmap(long imFontConfig); /*
-        return (uintptr_t)THIS->AddFontDefaultBitmap(reinterpret_cast<ImFontConfig*>(imFontConfig));
+    private native long nAddFontDefault(long configPtr, int kind); /*
+        ImFontConfig config;
+        if (!Jni::PrepareFontConfig(env, THIS, (ImFontConfig*)configPtr, config)) return 0;
+        const ImFontConfig* font_config = configPtr == 0 ? NULL : &config;
+        if (kind == 1) return (uintptr_t)THIS->AddFontDefaultVector(font_config);
+        if (kind == 2) return (uintptr_t)THIS->AddFontDefaultBitmap(font_config);
+        return (uintptr_t)THIS->AddFontDefault(font_config);
     */
 
     public ImFont addFontFromFileTTF(final String filename, final float sizePixels) {
-        return new ImFont(nAddFontFromFileTTF(filename, sizePixels));
+        return addFontFromFileTTF(filename, sizePixels, null, null);
     }
 
     public ImFont addFontFromFileTTF(final String filename, final float sizePixels, final ImFontConfig fontConfig) {
-        return new ImFont(nAddFontFromFileTTF(filename, sizePixels, fontConfig.ptr));
-    }
-
-    public ImFont addFontFromFileTTF(final String filename, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromFileTTF(filename, sizePixels, fontConfig.ptr, glyphRanges));
+        return addFontFromFileTTF(filename, sizePixels, fontConfig, null);
     }
 
     public ImFont addFontFromFileTTF(final String filename, final float sizePixels, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromFileTTF(filename, sizePixels, glyphRanges));
+        return addFontFromFileTTF(filename, sizePixels, null, glyphRanges);
     }
 
-    private native long nAddFontFromFileTTF(String obj_filename, float sizePixels); /*MANUAL
-        auto filename = obj_filename == NULL ? NULL : (char*)env->GetStringUTFChars(obj_filename, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromFileTTF(filename, sizePixels);
-        if (filename != NULL) env->ReleaseStringUTFChars(obj_filename, filename);
-        return _result;
+    /** Registers a font; supplied data and ranges need not remain reachable after this call. */
+    public ImFont addFontFromFileTTF(final String filename, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
+        if (filename == null) {
+            throw new NullPointerException("filename");
+        }
+        ImFontConfig.validateGlyphRanges(glyphRanges, false);
+        return new ImFont(nAddFontFromFileTTF(filename, sizePixels,
+                configPointer(fontConfig, false), glyphRanges));
+    }
+
+    private native long nAddFontFromFileTTF(String obj_filename, float sizePixels, long configPtr, short[] obj_glyphRanges); /*MANUAL
+        ImFontConfig config;
+        if (!Jni::PrepareFontConfig(env, THIS, (ImFontConfig*)configPtr, config)) return 0;
+        Jni::FontInput input(env, obj_glyphRanges, NULL, obj_filename);
+        if (env->ExceptionCheck()) return 0;
+        return (uintptr_t)THIS->AddFontFromFileTTF(input.Text, sizePixels, &config, (ImWchar*)input.Ranges);
     */
 
-    private native long nAddFontFromFileTTF(String obj_filename, float sizePixels, long fontConfig); /*MANUAL
-        auto filename = obj_filename == NULL ? NULL : (char*)env->GetStringUTFChars(obj_filename, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromFileTTF(filename, sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig));
-        if (filename != NULL) env->ReleaseStringUTFChars(obj_filename, filename);
-        return _result;
-    */
-
-    private native long nAddFontFromFileTTF(String obj_filename, float sizePixels, long fontConfig, short[] obj_glyphRanges); /*MANUAL
-        auto filename = obj_filename == NULL ? NULL : (char*)env->GetStringUTFChars(obj_filename, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromFileTTF(filename, sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig), (ImWchar*)&glyphRanges[0]);
-        if (filename != NULL) env->ReleaseStringUTFChars(obj_filename, filename);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromFileTTF(String obj_filename, float sizePixels, short[] obj_glyphRanges); /*MANUAL
-        auto filename = obj_filename == NULL ? NULL : (char*)env->GetStringUTFChars(obj_filename, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromFileTTF(filename, sizePixels, NULL, (ImWchar*)&glyphRanges[0]);
-        if (filename != NULL) env->ReleaseStringUTFChars(obj_filename, filename);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
     public ImFont addFontFromMemoryTTF(final byte[] fontData, final float sizePixels) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, sizePixels));
+        return addFontFromMemoryTTF(fontData, sizePixels, null, null);
     }
 
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
     public ImFont addFontFromMemoryTTF(final byte[] fontData, final float sizePixels, final ImFontConfig fontConfig) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, sizePixels, fontConfig.ptr));
+        return addFontFromMemoryTTF(fontData, sizePixels, fontConfig, null);
     }
 
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
-    public ImFont addFontFromMemoryTTF(final byte[] fontData, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, sizePixels, fontConfig.ptr, glyphRanges));
-    }
-
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
     public ImFont addFontFromMemoryTTF(final byte[] fontData, final float sizePixels, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, sizePixels, glyphRanges));
+        return addFontFromMemoryTTF(fontData, sizePixels, null, glyphRanges);
     }
 
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, float sizePixels); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], (int)env->GetArrayLength(obj_fontData), sizePixels);
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        return _result;
-    */
+    /** Copies the selected TTF/OTF bytes into atlas-owned native storage. */
+    public ImFont addFontFromMemoryTTF(final byte[] fontData, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
+        return addFontFromMemoryTTF(fontData, fontData.length, sizePixels, fontConfig, glyphRanges);
+    }
 
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, float sizePixels, long fontConfig); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], (int)env->GetArrayLength(obj_fontData), sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig));
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, float sizePixels, long fontConfig, short[] obj_glyphRanges); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], (int)env->GetArrayLength(obj_fontData), sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig), (ImWchar*)&glyphRanges[0]);
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, float sizePixels, short[] obj_glyphRanges); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], (int)env->GetArrayLength(obj_fontData), sizePixels, NULL, (ImWchar*)&glyphRanges[0]);
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
     public ImFont addFontFromMemoryTTF(final byte[] fontData, final int fontDataSize, final float sizePixels) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, fontDataSize, sizePixels));
+        return addFontFromMemoryTTF(fontData, fontDataSize, sizePixels, null, null);
     }
 
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
     public ImFont addFontFromMemoryTTF(final byte[] fontData, final int fontDataSize, final float sizePixels, final ImFontConfig fontConfig) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, fontDataSize, sizePixels, fontConfig.ptr));
+        return addFontFromMemoryTTF(fontData, fontDataSize, sizePixels, fontConfig, null);
     }
 
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
-    public ImFont addFontFromMemoryTTF(final byte[] fontData, final int fontDataSize, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, fontDataSize, sizePixels, fontConfig.ptr, glyphRanges));
-    }
-
-    /**
-     * Note: Transfer ownership of 'ttf_data' to ImFontAtlas! Will be deleted after destruction of the atlas.
-     * Set font_cfg.FontDataOwnedByAtlas=false to keep ownership of your data and it won't be freed.
-     */
     public ImFont addFontFromMemoryTTF(final byte[] fontData, final int fontDataSize, final float sizePixels, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryTTF(fontData, fontDataSize, sizePixels, glyphRanges));
+        return addFontFromMemoryTTF(fontData, fontDataSize, sizePixels, null, glyphRanges);
     }
 
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, int fontDataSize, float sizePixels); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], fontDataSize, sizePixels);
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        return _result;
+    /** Copies the selected TTF/OTF bytes into atlas-owned native storage. */
+    public ImFont addFontFromMemoryTTF(final byte[] fontData, final int fontDataSize, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
+        if (fontDataSize <= 0 || fontDataSize > fontData.length) {
+            throw new IllegalArgumentException("Font data size must be within the supplied array");
+        }
+        ImFontConfig.validateGlyphRanges(glyphRanges, false);
+        return new ImFont(nAddFontFromMemoryTTF(fontData, fontDataSize, sizePixels,
+                configPointer(fontConfig, false), glyphRanges));
+    }
+
+    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, int fontDataSize, float sizePixels, long configPtr,
+                                            short[] obj_glyphRanges); /*MANUAL
+        ImFontConfig config;
+        if (!Jni::PrepareFontConfig(env, THIS, (ImFontConfig*)configPtr, config)) return 0;
+        if (fontDataSize <= 0 || fontDataSize > env->GetArrayLength(obj_fontData)) {
+            env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Font data size is out of bounds");
+            return 0;
+        }
+        Jni::FontInput input(env, obj_glyphRanges);
+        if (env->ExceptionCheck()) return 0;
+        void* copy = Jni::CopyJavaFontData(env, obj_fontData, fontDataSize);
+        if (copy == NULL) return 0;
+        return (uintptr_t)THIS->AddFontFromMemoryTTF(copy, fontDataSize, sizePixels, &config, (ImWchar*)input.Ranges);
     */
 
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, int fontDataSize, float sizePixels, long fontConfig); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], fontDataSize, sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig));
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, int fontDataSize, float sizePixels, long fontConfig, short[] obj_glyphRanges); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], fontDataSize, sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig), (ImWchar*)&glyphRanges[0]);
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryTTF(byte[] obj_fontData, int fontDataSize, float sizePixels, short[] obj_glyphRanges); /*MANUAL
-        auto fontData = obj_fontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_fontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryTTF(&fontData[0], fontDataSize, sizePixels, NULL, (ImWchar*)&glyphRanges[0]);
-        if (fontData != NULL) env->ReleasePrimitiveArrayCritical(obj_fontData, fontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
     public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final float sizePixels) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, sizePixels));
+        return addFontFromMemoryCompressedTTF(compressedFontData, sizePixels, null, null);
     }
 
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
-    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final float sizePixels, final ImFontConfig imFontConfig) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, sizePixels, imFontConfig.ptr));
+    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final float sizePixels, final ImFontConfig fontConfig) {
+        return addFontFromMemoryCompressedTTF(compressedFontData, sizePixels, fontConfig, null);
     }
 
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
-    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final float sizePixels, final ImFontConfig imFontConfig, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, sizePixels, imFontConfig.ptr, glyphRanges));
-    }
-
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
     public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final float sizePixels, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, sizePixels, glyphRanges));
+        return addFontFromMemoryCompressedTTF(compressedFontData, sizePixels, null, glyphRanges);
     }
 
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, float sizePixels); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], (int)env->GetArrayLength(obj_compressedFontData), sizePixels);
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, float sizePixels, long imFontConfig); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], (int)env->GetArrayLength(obj_compressedFontData), sizePixels, reinterpret_cast<ImFontConfig*>(imFontConfig));
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, float sizePixels, long imFontConfig, short[] obj_glyphRanges); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], (int)env->GetArrayLength(obj_compressedFontData), sizePixels, reinterpret_cast<ImFontConfig*>(imFontConfig), (ImWchar*)&glyphRanges[0]);
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, float sizePixels, short[] obj_glyphRanges); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], (int)env->GetArrayLength(obj_compressedFontData), sizePixels, NULL, (ImWchar*)&glyphRanges[0]);
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
-    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int compressedFontDataSize, final float sizePixels) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, compressedFontDataSize, sizePixels));
+    /** Registers a font; supplied data and ranges need not remain reachable after this call. */
+    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
+        return addFontFromMemoryCompressedTTF(compressedFontData, compressedFontData.length, sizePixels, fontConfig, glyphRanges);
     }
 
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
-    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int compressedFontDataSize, final float sizePixels, final ImFontConfig imFontConfig) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, compressedFontDataSize, sizePixels, imFontConfig.ptr));
+    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int fontDataSize, final float sizePixels) {
+        return addFontFromMemoryCompressedTTF(compressedFontData, fontDataSize, sizePixels, null, null);
     }
 
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
-    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int compressedFontDataSize, final float sizePixels, final ImFontConfig imFontConfig, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, compressedFontDataSize, sizePixels, imFontConfig.ptr, glyphRanges));
+    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int fontDataSize, final float sizePixels, final ImFontConfig fontConfig) {
+        return addFontFromMemoryCompressedTTF(compressedFontData, fontDataSize, sizePixels, fontConfig, null);
     }
 
-    /**
-     * 'compressed_font_data' still owned by caller. Compress with binary_to_compressed_c.cpp.
-     */
-    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int compressedFontDataSize, final float sizePixels, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, compressedFontDataSize, sizePixels, glyphRanges));
+    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int fontDataSize, final float sizePixels, final short[] glyphRanges) {
+        return addFontFromMemoryCompressedTTF(compressedFontData, fontDataSize, sizePixels, null, glyphRanges);
     }
 
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, int compressedFontDataSize, float sizePixels); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], compressedFontDataSize, sizePixels);
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, int compressedFontDataSize, float sizePixels, long imFontConfig); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], compressedFontDataSize, sizePixels, reinterpret_cast<ImFontConfig*>(imFontConfig));
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, int compressedFontDataSize, float sizePixels, long imFontConfig, short[] obj_glyphRanges); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], compressedFontDataSize, sizePixels, reinterpret_cast<ImFontConfig*>(imFontConfig), (ImWchar*)&glyphRanges[0]);
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, int compressedFontDataSize, float sizePixels, short[] obj_glyphRanges); /*MANUAL
-        auto compressedFontData = obj_compressedFontData == NULL ? NULL : (char*)env->GetPrimitiveArrayCritical(obj_compressedFontData, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(&compressedFontData[0], compressedFontDataSize, sizePixels, NULL, (ImWchar*)&glyphRanges[0]);
-        if (compressedFontData != NULL) env->ReleasePrimitiveArrayCritical(obj_compressedFontData, compressedFontData, JNI_FALSE);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
-
-    /**
-     * 'compressed_font_data_base85' still owned by caller. Compress with binary_to_compressed_c.cpp with -base85 parameter.
-     */
-    public ImFont addFontFromMemoryCompressedBase85TTF(final String compressedFontDataBase85, final float sizePixels, final ImFontConfig fontConfig) {
-        return new ImFont(nAddFontFromMemoryCompressedBase85TTF(compressedFontDataBase85, sizePixels, fontConfig.ptr));
+    /** Registers a font; supplied data and ranges need not remain reachable after this call. */
+    public ImFont addFontFromMemoryCompressedTTF(final byte[] compressedFontData, final int fontDataSize, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
+        if (fontDataSize <= 0 || fontDataSize > compressedFontData.length) {
+            throw new IllegalArgumentException("Font data size must be within the supplied array");
+        }
+        ImFontConfig.validateGlyphRanges(glyphRanges, false);
+        return new ImFont(nAddFontFromMemoryCompressedTTF(compressedFontData, fontDataSize, sizePixels,
+                configPointer(fontConfig, false), glyphRanges));
     }
 
-    /**
-     * 'compressed_font_data_base85' still owned by caller. Compress with binary_to_compressed_c.cpp with -base85 parameter.
-     */
-    public ImFont addFontFromMemoryCompressedBase85TTF(final String compressedFontDataBase85, final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
-        return new ImFont(nAddFontFromMemoryCompressedBase85TTF(compressedFontDataBase85, sizePixels, fontConfig.ptr, glyphRanges));
+    private native long nAddFontFromMemoryCompressedTTF(byte[] obj_compressedFontData, int fontDataSize, float sizePixels,
+                                                      long configPtr, short[] obj_glyphRanges); /*MANUAL
+        ImFontConfig config;
+        if (!Jni::PrepareFontConfig(env, THIS, (ImFontConfig*)configPtr, config)) return 0;
+        if (fontDataSize < 16 || fontDataSize > env->GetArrayLength(obj_compressedFontData)) {
+            env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Compressed font data size is out of bounds");
+            return 0;
+        }
+        Jni::FontInput input(env, obj_glyphRanges, obj_compressedFontData);
+        if (env->ExceptionCheck()) return 0;
+        // Trusted stb-compressed font input: native decoding allocates and transfers its output once.
+        return (uintptr_t)THIS->AddFontFromMemoryCompressedTTF(input.Bytes, fontDataSize, sizePixels, &config, (ImWchar*)input.Ranges);
+    */
+
+    public ImFont addFontFromMemoryCompressedBase85TTF(final String compressedFontDataBase85,
+                                                      final float sizePixels, final ImFontConfig fontConfig) {
+        return addFontFromMemoryCompressedBase85TTF(compressedFontDataBase85, sizePixels, fontConfig, null);
     }
 
-    private native long nAddFontFromMemoryCompressedBase85TTF(String obj_compressedFontDataBase85, float sizePixels, long fontConfig); /*MANUAL
-        auto compressedFontDataBase85 = obj_compressedFontDataBase85 == NULL ? NULL : (char*)env->GetStringUTFChars(obj_compressedFontDataBase85, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedBase85TTF(compressedFontDataBase85, sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig));
-        if (compressedFontDataBase85 != NULL) env->ReleaseStringUTFChars(obj_compressedFontDataBase85, compressedFontDataBase85);
-        return _result;
+    /** Registers trusted stb/base85 font data; native decoding owns the uncompressed font source. */
+    public ImFont addFontFromMemoryCompressedBase85TTF(final String compressedFontDataBase85,
+                                                      final float sizePixels, final ImFontConfig fontConfig, final short[] glyphRanges) {
+        if (compressedFontDataBase85 == null) {
+            throw new NullPointerException("compressedFontDataBase85");
+        }
+        ImFontConfig.validateGlyphRanges(glyphRanges, false);
+        return new ImFont(nAddFontFromMemoryCompressedBase85TTF(compressedFontDataBase85, sizePixels,
+                configPointer(fontConfig, false), glyphRanges));
+    }
+
+    private native long nAddFontFromMemoryCompressedBase85TTF(String obj_compressedFontDataBase85, float sizePixels,
+                                                             long configPtr, short[] obj_glyphRanges); /*MANUAL
+        ImFontConfig config;
+        if (!Jni::PrepareFontConfig(env, THIS, (ImFontConfig*)configPtr, config)) return 0;
+        Jni::FontInput input(env, obj_glyphRanges, NULL, obj_compressedFontDataBase85);
+        if (env->ExceptionCheck()) return 0;
+        return (uintptr_t)THIS->AddFontFromMemoryCompressedBase85TTF(input.Text, sizePixels, &config, (ImWchar*)input.Ranges);
     */
 
-    private native long nAddFontFromMemoryCompressedBase85TTF(String obj_compressedFontDataBase85, float sizePixels, long fontConfig, short[] obj_glyphRanges); /*MANUAL
-        auto compressedFontDataBase85 = obj_compressedFontDataBase85 == NULL ? NULL : (char*)env->GetStringUTFChars(obj_compressedFontDataBase85, JNI_FALSE);
-        auto glyphRanges = obj_glyphRanges == NULL ? NULL : (short*)env->GetPrimitiveArrayCritical(obj_glyphRanges, JNI_FALSE);
-        auto _result = (uintptr_t)THIS->AddFontFromMemoryCompressedBase85TTF(compressedFontDataBase85, sizePixels, reinterpret_cast<ImFontConfig*>(fontConfig), (ImWchar*)&glyphRanges[0]);
-        if (compressedFontDataBase85 != NULL) env->ReleaseStringUTFChars(obj_compressedFontDataBase85, compressedFontDataBase85);
-        if (glyphRanges != NULL) env->ReleasePrimitiveArrayCritical(obj_glyphRanges, glyphRanges, JNI_FALSE);
-        return _result;
-    */
+    private static long configPointer(final ImFontConfig config, final boolean required) {
+        if (config == null) {
+            if (required) {
+                throw new NullPointerException("fontConfig");
+            }
+            return 0;
+        }
+        if (config.ptr == 0) {
+            throw new IllegalStateException("Font configuration has been destroyed");
+        }
+        return config.ptr;
+    }
 
-    /**
+     /**
      * Clear input data (all ImFontConfig structures including sizes, TTF data, glyph ranges, etc.) = all the data used to build the texture and fonts.
      */
     public void clearInputData() {
@@ -467,7 +373,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->ClearInputData();
     */
 
-    /**
+     /**
      * Clear output texture data (CPU side). Saves RAM once the texture has been copied to graphics memory.
      */
     public void clearTexData() {
@@ -478,7 +384,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->ClearTexData();
     */
 
-    /**
+     /**
      * Clear output font data (glyphs storage, UV coordinates).
      */
     public void clearFonts() {
@@ -489,7 +395,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->ClearFonts();
     */
 
-    /**
+     /**
      * Clear all input and output.
      */
     public void clear() {
@@ -533,7 +439,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         #endif
     */
 
-    /**
+     /**
      * Build pixels data. This is called automatically for you by the GetTexData*** functions.
      */
     public boolean build() {
@@ -618,7 +524,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         return THIS->IsBuilt();
     */
 
-    /**
+     /**
      * User data to refer to the texture once it has been uploaded to user's graphic systems.
      * It is passed back to you during rendering via the ImDrawCmd structure.
      */
@@ -644,8 +550,8 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
             int size = 0; \
             for (; ranges[0]; ranges += 2) \
                 size += 2; \
-            jshortArray jShorts = env->NewShortArray(size); \
-            env->SetShortArrayRegion(jShorts, 0, size, (jshort*)glyphs); \
+            jshortArray jShorts = env->NewShortArray(size + 1); \
+            env->SetShortArrayRegion(jShorts, 0, size + 1, (jshort*)glyphs); \
             return jShorts;
      */
 
@@ -736,7 +642,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         return THIS->AddCustomRectRegular(width, height);
     */
 
-    /**
+     /**
      * Id needs to be {@code <} 0x110000 to register a rectangle to map into a specific font.
      */
     public int addCustomRectFontGlyph(final ImFont imFont, final short id, final int width, final int height, final float advanceX) {
@@ -773,7 +679,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
     // Members
     //-------------------------------------------
 
-    /**
+     /**
      * Build flags (see {@link imgui.flag.ImFontAtlasFlags})
      */
     public int getFlags() {
@@ -818,7 +724,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
 
     // TexID implemented as SetTexID function
 
-    /**
+     /**
      * Minimum desired atlas texture width (must be power of two). Default 512. (since imgui 1.92 —
      * replaces the old TexDesiredWidth; set TexMinWidth = TexMaxWidth to pin a specific width.)
      */
@@ -842,7 +748,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->TexMinWidth = value;
     */
 
-    /**
+     /**
      * Minimum desired atlas texture height (must be power of two). Default 128. (since imgui 1.92)
      */
     public int getTexMinHeight() {
@@ -864,7 +770,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->TexMinHeight = value;
     */
 
-    /**
+     /**
      * Maximum desired atlas texture width (must be power of two). Default 8192. (since imgui 1.92)
      * Increase when loading large glyph sets (e.g. full CJK) on legacy backends without
      * {@code ImGuiBackendFlags_RendererHasTextures} support.
@@ -890,7 +796,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->TexMaxWidth = value;
     */
 
-    /**
+     /**
      * Maximum desired atlas texture height (must be power of two). Default 8192. (since imgui 1.92)
      */
     public int getTexMaxHeight() {
@@ -912,7 +818,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->TexMaxHeight = value;
     */
 
-    /**
+     /**
      * Padding between glyphs within texture in pixels. Defaults to 1.
      * If your rendering method doesn't rely on bilinear filtering you may set this to 0.
      */
@@ -936,7 +842,7 @@ public final class ImFontAtlas extends ImGuiStructDestroyable {
         THIS->TexGlyphPadding = value;
     */
 
-    /**
+     /**
      * Marked as Locked by ImGui::NewFrame() so attempt to modify the atlas will assert.
      */
     public boolean getLocked() {

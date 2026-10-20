@@ -1,0 +1,14 @@
+diff --git a/imgui_draw.cpp b/imgui_draw.cpp
+--- a/imgui_draw.cpp
++++ b/imgui_draw.cpp
+@@ -3051,7 +3051,9 @@ ImFont* ImFontAtlas::AddFont(const ImFontConfig* font_cfg_in)
+         font->FontId = FontNextUniqueID++;
+         font->Flags = font_cfg_in->Flags;
+         font->LegacySize = font_cfg_in->SizePixels;
+-        font->CurrentRasterizerDensity = font_cfg_in->RasterizerDensity;
++        // Source density is already multiplied by the stb/FreeType loaders.
++        // Legacy preload must not seed the independent baked density with it again.
++        font->CurrentRasterizerDensity = 1.0f;
+         Fonts.push_back(font);
+     }
+     else

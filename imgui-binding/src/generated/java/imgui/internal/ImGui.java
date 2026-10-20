@@ -3,17 +3,24 @@ package imgui.internal;
 import imgui.ImDrawList;
 import imgui.ImFont;
 import imgui.ImGuiPlatformMonitor;
+import imgui.ImGuiStyle;
 import imgui.ImGuiViewport;
 import imgui.ImVec2;
 import imgui.ImVec4;
+
+
+
+
 import imgui.type.ImBoolean;
 import imgui.type.ImFloat;
 import imgui.type.ImInt;
+
 
 public final class ImGui extends imgui.ImGui {
     /*JNI
         #include "_common.h"
         #include "_internal.h"
+        #include "jni_style_scale.h"
      */
 
     static {
@@ -25,6 +32,39 @@ public final class ImGui extends imgui.ImGui {
 
     private static native void nInit(); /*
         Jni::InitInternal(env);
+    */
+
+    /**
+     * Applies the complete native size-metric set from an independent, unscaled baseline.
+     * Capture that baseline before the first scale operation (native reference scale must be one).
+     * Every call reapplies unoverridden metrics, even at the same scale; no separate force/reset is needed.
+     * Direct size edits belong in the baseline, while scoped overrides must use PushStyleVar/PopStyleVar.
+     * Do not assign or otherwise rescale the active style between calls.
+     *
+     * <p>The lowest backup of each dimensional style variable is replaced by the scaled baseline.
+     * Nested backups and live overrides retain their values at the new/old scale ratio without integer
+     * truncation. Native X/Y-only pushes store whole vectors and are rebased as such.
+     * Baseline separator and docking-separator thicknesses retain their native one-pixel minimum;
+     * this floor never overwrites a live scoped override.
+     * Non-dimensional variables, colors and font configuration are not copied from the baseline.
+     * The current font cache is refreshed when a current window exists, including viewport changes in End().
+     *
+     * @param unscaledBaseline independent native style with reference scale one
+     * @param effectiveScale positive finite absolute size scale
+     * @throws IllegalArgumentException if the baseline is null/invalid or scale is not positive and finite
+     */
+    public static void applyStyleScale(final ImGuiStyle unscaledBaseline, final float effectiveScale) {
+        if (unscaledBaseline == null || unscaledBaseline.isNotValidPtr()) {
+            throw new IllegalArgumentException("Style scaling requires a valid independent baseline");
+        }
+        if (!(effectiveScale > 0.0f) || !Float.isFinite(effectiveScale)) {
+            throw new IllegalArgumentException("Style scale must be positive and finite");
+        }
+        nApplyStyleScale(unscaledBaseline.ptr, effectiveScale);
+    }
+
+    private static native void nApplyStyleScale(long baselinePtr, float effectiveScale); /*
+        Jni::ApplyStyleScale(*reinterpret_cast<const ImGuiStyle*>(baselinePtr), effectiveScale);
     */
 
     // Windows
@@ -992,7 +1032,7 @@ public final class ImGui extends imgui.ImGui {
         return ImGui::DockBuilderAddNode(nodeId, flags);
     */
 
-    /**
+     /**
      * Remove node and all its child, undock all windows.
      */
     public static void dockBuilderRemoveNode(final int nodeId) {
@@ -1019,7 +1059,7 @@ public final class ImGui extends imgui.ImGui {
         ImGui::DockBuilderRemoveNodeDockedWindows(nodeId, clearSettingsRefs);
     */
 
-    /**
+     /**
      * Remove all split/hierarchy. All remaining docked windows will be re-docked to the remaining root node (node_id).
      */
     public static void dockBuilderRemoveNodeChildNodes(final int nodeId) {
@@ -1056,7 +1096,7 @@ public final class ImGui extends imgui.ImGui {
         ImGui::DockBuilderSetNodeSize(nodeId, size);
     */
 
-    /**
+     /**
      * Create 2 child nodes in this parent node.
      */
     public static int dockBuilderSplitNode(final int nodeId, final int splitDir, final float sizeRatioForNodeAtDir, final ImInt outIdAtDir, final ImInt outIdAtOppositeDir) {
@@ -1128,7 +1168,7 @@ public final class ImGui extends imgui.ImGui {
         ImGui::TableSetColumnSortDirection(columnN, static_cast<ImGuiSortDirection>(sortDirection), appendToSortSpecs);
     */
 
-    /**
+     /**
      * May use {@code (TableGetColumnFlags() & ImGuiTableColumnFlags_IsHovered)} instead. Return hovered column.
      * Return -1 when table is not hovered. return columns_count if the unused space at the right of visible columns is hovered.
      */
@@ -1140,7 +1180,7 @@ public final class ImGui extends imgui.ImGui {
         return ImGui::TableGetHoveredColumn();
     */
 
-    /**
+     /**
      * Retrieve *PREVIOUS FRAME* hovered row. This difference with TableGetHoveredColumn() is the reason why this is not public yet.
      */
     public static int tableGetHoveredRow() {

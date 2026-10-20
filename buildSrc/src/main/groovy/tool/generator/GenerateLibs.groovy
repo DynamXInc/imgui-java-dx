@@ -199,8 +199,11 @@ class GenerateLibs extends DefaultTask {
             throw new IllegalStateException("Unable to build library for FreeType")
         }
 
-        target.cppFlags += " -I$freetypeVendorDir/include"
-        target.linkerFlags += " -L${project.rootProject.file("$freetypeVendorDir/lib")}"
+        def freetypePath = freetypeVendorDir.path.replace('\\', '/')
+        def freetypeSourcePath = jniDir.replace('\\', '/') + '/misc/freetype'
+        // Cygwin's compiler cannot derive a quoted-include directory from Ant's backslash source paths.
+        target.cppFlags += " -I$freetypePath/include -I$freetypeSourcePath"
+        target.linkerFlags += " -L$freetypePath/lib"
         target.libraries += ' -lfreetype'
     }
 

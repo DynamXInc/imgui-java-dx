@@ -36,6 +36,25 @@ public final class ImGuiStyle extends ImGuiStructDestroyable {
     */
 
     /**
+     * Copies the complete native style, including fields not exposed by this binding.
+     * Use for initialization and independent baseline snapshots, not to reset the active style mid-frame:
+     * this assignment does not rebase pending style-variable or color-stack backups.
+     *
+     * @param source live native style to copy
+     * @throws IllegalArgumentException if either native style is invalid or source is null
+     */
+    public void copyFrom(final ImGuiStyle source) {
+        if (source == null || source.isNotValidPtr() || isNotValidPtr()) {
+            throw new IllegalArgumentException("Style copy requires valid source and destination styles");
+        }
+        nCopyFrom(source.ptr);
+    }
+
+    private native void nCopyFrom(long sourcePtr); /*
+        *THIS = *reinterpret_cast<const ImGuiStyle*>(sourcePtr);
+    */
+
+    /**
      * Global alpha applies to everything in Dear ImGui.
      */
     @BindingField
@@ -46,6 +65,13 @@ public final class ImGuiStyle extends ImGuiStructDestroyable {
      */
     @BindingField
     public float DisabledAlpha;
+
+    /**
+     * Current base font size before global scaling. Use {@code ImGui.pushFont(null, size)} to modify it,
+     * and {@code ImGui.getFontSize()} to obtain the scaled value.
+     */
+    @BindingField(accessors = BindingField.Accessor.GETTER)
+    public float FontSizeBase;
 
     /**
      * Main global scale factor applied on top of font size. Replaces {@code io.FontGlobalScale} (moved

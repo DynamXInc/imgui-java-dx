@@ -16,6 +16,159 @@ Tracks **Dear ImGui v1.92.7** (docking branch).
 
 ---
 
+## BetterLights local fork
+
+This independent checkout is based on upstream
+[v1.92.7.1](https://github.com/SpaiR/imgui-java/releases/tag/v1.92.7.1), with Dear ImGui
+pinned at `b1bcb12a624af7509894c8e77dd47416997777fa` (1.92.7 docking).
+It is **not a published GitHub fork or Maven Central release**.
+
+BetterLights consumes the matched `dz.betterlights.imgui` artifacts
+`imgui-java-binding`, `imgui-java-lwjgl3`, `imgui-java-natives-windows` and
+`imgui-java-natives-linux`, all version **`1.92.7.1-bl.2`**, from this checkout's
+`build/maven/` repository. Its `imguiForkRepository` Gradle property can override the
+default sibling path. The binding still targets Java 8. BetterLights excludes the
+backend module's transitive LWJGL dependencies and retains Minecraft's LWJGL 3.3.3.
+Windows x64 and Linux x64 are built and exercised here; macOS and the app module are
+not part of this delivery. The sections below this fork section describe upstream
+APIs/distribution; their `io.github.spair` examples are not fork coordinates.
+
+### Native contract
+
+- Whole-style copying and `imgui.internal.ImGui.applyStyleScale` use the pinned
+  native layout, including active native style overrides and current font caches.
+  No Java byte offsets, incomplete metric mirrors, or extra sidecar DLL.
+- Typed window/dock accessors support secondary-viewport canonical geometry.
+- Idempotent vendor patches fix legacy raster density being applied twice and
+  give the atlas ownership of registered legacy glyph ranges. The binding owns
+  font bytes and both configured preload/exclusion ranges independently.
+- Both stb and statically linked FreeType remain available.
+
+### Font ownership and sizing (bl.2)
+
+Uncompressed Java font arrays are copied into atlas-owned native memory. A
+configuration owns a separate copy made by `setFontData(byte[])`; `addFont(config)`
+copies it again, so configs can be reused, replaced or destroyed after registration.
+`setFontData(null)` clears it. `getFontDataSize()` remains; its setter and both
+`FontDataOwnedByAtlas` accessors were removed. File/default/compressed registrations
+own their decoded native sources without another uncompressed copy. Native font
+parsers still require trusted valid font data; this is not malformed-font hardening.
+
+Configured glyph ranges are copied and getters return snapshots. Ranges require
+zero-terminated pairs; ordinary ranges have no 32-pair exclusion limit.
+Atlas `getGlyphRanges*()` helpers include the terminator and can round-trip into
+configuration setters.
+
+`new ImFontAtlas()` allocates a real, standalone owned atlas. `destroy()` is typed
+and idempotent, but rejects a borrowed wrapper or an atlas still in use. Native
+1.92.7 takes over final deletion for atlases attached to contexts: destroying the
+last context invalidates the original owning Java wrapper. Borrowed views remain
+untracked and must not be used after native deletion. Native objects still require
+explicit lifecycle management and single-threaded use; direct `ptr` mutation or
+external native destruction bypasses these guarantees.
+
+`ImGui.pushFont(null, size)` retains the current font; size zero retains the current
+unscaled size. `ImGui.getFontSize()` now returns float (a binary-signature change).
+Use read-only `ImGui.getStyle().getFontSizeBase()` for relative unscaled sizes,
+not the already scaled font size. The legacy texture renderer and validated
+BetterLights scaling/geometry policy are unchanged.
+
+Edit binding sources in `imgui-binding/src/main/java`, then regenerate the API;
+do not edit `src/generated/java`. Rebuild and publish Java and native artifacts
+together after native API changes. Bump the fork version for subsequent releases:
+the processed `imgui.java.version` also namespaces native extraction, and is a
+declared resource-task input. Never mix this Java binding with a stock native JAR.
+An already-running native consumer must be restarted by its owner after replacement.
+
+### Reproduced Windows build
+
+Run from the fork root in `cmd.exe`. Required: a Gradle-launching JDK (the build
+selects JDK 17), Ant, Cygwin Bash/make, native Git, and
+`x86_64-w64-mingw32-g++` (not Cygwin's ordinary `g++`).
+The verified workstation used MinGW-w64 GCC 13.4.0 and Ant 1.10.18.
+Adjust these installed-tool paths on another machine:
+
+```bat
+set "GRADLE_USER_HOME=H:\Developpement\.gradle-imgui-betterlights"
+set "GRADLE_RO_DEP_CACHE=C:/Users/yanis/.gradle/caches"
+set "JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=H:\Developpement\.gradle-imgui-betterlights\tmp"
+set "ANT_HOME=H:\Developpement\.gradle-imgui-betterlights\tools\apache-ant-1.10.18"
+set "PATH=%ANT_HOME%\bin;H:\cygwin64\bin;C:\Program Files\Git\bin;%PATH%"
+H:\cygwin64\bin\bash.exe buildSrc/scripts/vendor_freetype.sh windows
+gradlew.bat :imgui-binding:generateApi --console=plain
+gradlew.bat :imgui-binding:generateLibs -Denvs=windows -Dlocal=true -Dfreetype=true -PbashExecutable=H:/cygwin64/bin/bash.exe --console=plain
+gradlew.bat :imgui-binding:publishImguiPublicationToLocalForkRepository :imgui-lwjgl3:publishImguiPublicationToLocalForkRepository :imgui-binding-natives:publishImguiPublicationToLocalForkRepository -PdeployType=windows -PnativeDir=H:/Developpement/imgui-java-betterlights/imgui-binding/build/libsNative/windows64 --console=plain
+```
+
+The explicit Bash path avoids the workstation's broken System32 WSL launcher.
+The optional read-only dependency cache names `caches`, not `caches/modules-2`.
+The DLL output is `imgui-binding/build/libsNative/windows64/imgui-java64.dll`;
+`nativeDir` must point there, not the upstream default `bin/`.
+
+### Reproduced Linux build (WSL)
+
+Built 2026-10-06 in WSL Ubuntu 20.04 (GCC 9.4, glibc 2.31) from the same sources as the
+bl.2 Windows DLL. The `.so` needs glibc 2.29 and GLIBCXX 3.4.21 at runtime, FreeType
+is static. Two scripts live in `H:\Developpement\.gradle-imgui-betterlights\tools\linux\`:
+
+- `build-linux-native.sh`: fetches Temurin 17 and Ant 1.10.15 into `~/bl-tools` once,
+  rsyncs this checkout to `~/bl-imgui-linux` (ext4; `build/`, `.gradle/`, `bin/`
+  excluded), runs `vendor_freetype.sh linux`, `generateLibs -Denvs=linux -Dlocal=true
+  -Dfreetype=true` and publishes `imgui-java-natives-linux` into the copy's `build/maven`.
+  It exports `GIT_CONFIG_PARAMETERS` with `core.autocrlf=true` because the Windows
+  checkout is CRLF through Git for Windows' system config: without it the idempotent
+  vendor-patch checks cannot see the already-applied patches.
+- `test-linux-native.sh`: the CPU-only JNI font regressions below, with the published
+  bl.2 binding jar and the new Linux natives jar.
+
+```bat
+wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/.gradle-imgui-betterlights/tools/linux/build-linux-native.sh
+wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/.gradle-imgui-betterlights/tools/linux/test-linux-native.sh
+wsl.exe -d Ubuntu -e bash -lc "cp -r ~/bl-imgui-linux/build/maven/dz/betterlights/imgui/imgui-java-natives-linux /mnt/h/Developpement/imgui-java-betterlights/build/maven/dz/betterlights/imgui/"
+```
+
+bl.2 Linux results: font stack **546 checks PASS**, ownership **88 checks/17 cases
+PASS** (same counts as Windows); all three vendor patches present; 3995 JNI entry
+points. WSL needs firmware virtualization enabled.
+
+### Native regression
+
+`imgui-binding/src/test/native/NativeStyleScaleProbe.cpp` exercises absolute style
+scales, nested/cross-scale scope restoration, font-cache changes, density-once
+rasterization, and glyph-range lifetime. It uses CPU-only ImGui contexts: no JNI,
+GLFW, GPU, desktop input, or Minecraft.
+
+```bat
+H:\cygwin64\bin\x86_64-w64-mingw32-g++.exe -std=c++17 -O2 -DNDEBUG -DIMGUI_DISABLE_WIN32_FUNCTIONS -DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS -Iinclude/imgui -Iimgui-binding/src/main/native imgui-binding/src/test/native/NativeStyleScaleProbe.cpp include/imgui/imgui.cpp include/imgui/imgui_draw.cpp include/imgui/imgui_widgets.cpp include/imgui/imgui_tables.cpp -static -static-libgcc -static-libstdc++ -o imgui-binding/build/NativeStyleScaleProbe.exe
+imgui-binding\build\NativeStyleScaleProbe.exe
+```
+
+Rendered mixed-DPI and JNI evidence lives in the consuming BetterLights checkout:
+`run/screenshots/editor-scaling-2026-09-15/`; verdicts and live-validation limits
+are recorded in `docs/editor_companion_repair_plan.md`.
+
+The focused Java/JNI regressions use the published native JAR (no native-path
+override), embedded fonts for stack behavior, and a supplied TrueType font for
+byte/range poisoning, config reuse and standalone/shared-atlas lifetimes:
+
+```bat
+set "BINDING=build\maven\dz\betterlights\imgui\imgui-java-binding\1.92.7.1-bl.2\imgui-java-binding-1.92.7.1-bl.2.jar"
+set "NATIVES=build\maven\dz\betterlights\imgui\imgui-java-natives-windows\1.92.7.1-bl.2\imgui-java-natives-windows-1.92.7.1-bl.2.jar"
+mkdir build\font-regression
+javac --release 8 -cp "%BINDING%" -d build\font-regression imgui-binding\src\test\java\imgui\FontApiRegression.java imgui-binding\src\test\java\imgui\FontMemoryRegression.java
+java -cp "%BINDING%;%NATIVES%;build\font-regression" imgui.FontApiRegression
+java -cp "%BINDING%;%NATIVES%;build\font-regression" imgui.FontMemoryRegression ..\BetterLights-1.20\src\main\resources\assets\betterlightsmod\fonts\inter.ttf
+```
+
+bl.2 results: font stack **546 checks PASS**, ownership **88 checks/17 cases PASS**,
+retained native style **6638 assertions/141 cases PASS**. A disposable registration
+smoke also matched glyph metrics and atlas pixels across uncompressed/file/
+compressed/prefix/base85 input on both loaders (10 cases). Evidence is under the
+consumer's `run/screenshots/editor-scaling-2026-09-15/font-binding-safety/`.
+These are native/CPU proofs, not in-game acceptance of bl.2.
+
+---
+
 ### Features
 
 - Generated JNI code with no third-party runtime dependencies.

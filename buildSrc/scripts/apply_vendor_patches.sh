@@ -8,7 +8,7 @@ BASEDIR=$(dirname "$0")
 cd "$BASEDIR"/../.. || exit 1
 
 apply_patch_idempotent() {
-    local patch_file="$1"
+    local patch_file="$1" # Relative to target_dir, also usable by native Git under Cygwin.
     local target_dir="$2"
 
     # --check returns 0 if the patch can apply cleanly (i.e. not yet applied),
@@ -28,5 +28,13 @@ apply_patch_idempotent() {
 }
 
 apply_patch_idempotent \
-    "$(pwd)/patches/imgui-node-editor-imgui-1.92-operator-star.patch" \
+    "../../patches/imgui-node-editor-imgui-1.92-operator-star.patch" \
     include/imgui-node-editor
+
+apply_patch_idempotent \
+    "../../patches/imgui-1.92-legacy-raster-density.patch" \
+    include/imgui
+
+apply_patch_idempotent \
+    "../../patches/imgui-1.92-font-range-ownership.patch" \
+    include/imgui

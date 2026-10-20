@@ -61,6 +61,7 @@ jar {
 // requirement.
 def processVersion = project.version.toString()
 processResources {
+    inputs.property('imguiJavaVersion', processVersion)
     filesMatching('**/imgui-java.properties') {
         filter(ReplaceTokens, tokens: [
                 'version': processVersion

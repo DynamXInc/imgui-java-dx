@@ -97,7 +97,18 @@ public final class ImGuiDockNode extends ImGuiStruct {
         THIS->ChildNodes[1] = (ImGuiDockNode*)imGuiDockNodePtr;
     */
 
-    // TODO  Windows, TabBar
+    /** Number of windows directly attached to this node, excluding child nodes. */
+    public native int getWindowsSize(); /*
+        return THIS->Windows.Size;
+    */
+
+    /** Identifier of a directly attached window. Useful without retaining a native window pointer. */
+    public native int getWindowId(int index); /*
+        IM_ASSERT(index >= 0 && index < THIS->Windows.Size);
+        return THIS->Windows[index]->ID;
+    */
+
+    // TODO: TabBar
 
     /**
      * Current position

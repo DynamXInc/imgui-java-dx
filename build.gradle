@@ -6,21 +6,14 @@ ext {
     lwjglVersion = '3.4.1'
 }
 
-// Gradle 9's configuration cache forbids starting external processes at
-// configuration time via Groovy's '...'.execute() (the cache can't know
-// if the result would be different next time). Use providers.exec, which
-// is cache-aware.
-def gitDescribeProvider = providers.exec {
-    commandLine 'git', 'describe', '--tags', '--always'
-}.standardOutput.asText.map { it.trim().startsWith('v') ? it.trim().substring(1) : it.trim() }.orElse('unknown')
 
 def gitRevProvider = providers.exec {
     commandLine 'git', 'rev-parse', 'HEAD'
 }.standardOutput.asText.map { it.trim() }.orElse('unknown')
 
 allprojects {
-    group = 'imgui-java'
-    version = gitDescribeProvider.get()
+    group = 'dz.betterlights.imgui'
+    version = '1.92.7.1-bl.2'
 
     repositories {
         mavenCentral()
@@ -87,5 +80,5 @@ tasks.register('generateAst', GenerateAst) {
 tasks.register('applyVendorPatches', Exec) {
     group = 'build'
     description = 'Apply patches to vendored submodules (e.g. imgui-node-editor imgui 1.92 compat).'
-    commandLine 'bash', 'buildSrc/scripts/apply_vendor_patches.sh'
+    commandLine(findProperty('bashExecutable') ?: 'bash', 'buildSrc/scripts/apply_vendor_patches.sh')
 }

@@ -173,8 +173,32 @@ public class ImGui {
     @BindingMethod
     public static native ImGuiContext CreateContext(@OptArg ImFontAtlas sharedFontAtlas);
 
-    @BindingMethod
-    public static native void DestroyContext(@OptArg ImGuiContext ctx);
+    /**
+     * Destroy the current context. A Java-owned shared atlas is invalidated when native teardown deletes its last reference.
+     */
+    public static void destroyContext() {
+        destroyContext(null);
+    }
+
+    /**
+     * Destroy a context, or the current context if {@code ctx} is null.
+     * A Java-owned shared atlas is invalidated when native teardown deletes its last reference.
+     *
+     * @param ctx context to destroy, or null for the current context
+     */
+    public static void destroyContext(final ImGuiContext ctx) {
+        final long contextPtr = ctx == null || ctx.isNotValidPtr() ? nGetCurrentContext() : ctx.ptr;
+        if (contextPtr == 0) {
+            return;
+        }
+        final ImFontAtlas[] atlases = ImFontAtlas.onContextDestroying(contextPtr);
+        nDestroyContext(contextPtr);
+        ImFontAtlas.onContextDestroyed(atlases);
+    }
+
+    private static native void nDestroyContext(long contextPtr); /*
+        ImGui::DestroyContext(reinterpret_cast<ImGuiContext*>(contextPtr));
+    */
 
     @BindingMethod
     public static native ImGuiContext GetCurrentContext();
@@ -644,12 +668,21 @@ public class ImGui {
     // Parameters stacks (shared)
 
     /**
-     * Push a font onto the stack. Since imgui 1.92 the {@code size} parameter is required:
-     * pass {@code 0.0f} to keep the current size; pass {@code font.LegacySize} to restore
-     * pre-1.92 behavior of using the font's original AddFont size.
+     * Push a font and unscaled size onto the stack. Pass {@code null} to keep the current font,
+     * or {@code 0.0f} to keep the current unscaled size. Since imgui 1.92, {@code size} is required.
+     * Use {@code getStyle().getFontSizeBase() * factor} to scale the current size, not {@code getFontSize()},
+     * which already includes global scaling. Pass {@code font.getLegacySize()} for pre-1.92 sizing.
+     *
+     * @param font font to select, or null to retain the current font
+     * @param size base font size before global scaling, or zero to retain the current base size
      */
-    @BindingMethod
-    public static native void PushFont(ImFont font, float size);
+    public static void pushFont(final ImFont font, final float size) {
+        nPushFont(font == null ? 0 : font.ptr, size);
+    }
+
+    private static native void nPushFont(long fontPtr, float size); /*
+        ImGui::PushFont(reinterpret_cast<ImFont*>(fontPtr), size);
+    */
 
     @BindingMethod
     public static native void PopFont();
@@ -756,10 +789,11 @@ public class ImGui {
     public static native ImFont GetFont();
 
     /**
-     * Get current font size (= height in pixels) of current font with current scale applied
+     * Get current font size (= height in pixels), after global scaling. Use {@code getStyle().getFontSizeBase()}
+     * for the unscaled size passed to {@code pushFont}; passing this scaled value would apply global scaling twice.
      */
     @BindingMethod
-    public static native int GetFontSize();
+    public static native float GetFontSize();
 
     /**
      * Get UV coordinate for a while pixel, useful to draw custom shapes via the ImDrawList API

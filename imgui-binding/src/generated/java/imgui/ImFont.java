@@ -2,6 +2,11 @@ package imgui;
 
 import imgui.binding.ImGuiStructDestroyable;
 
+
+
+
+
+
 /**
  * Font runtime data. A single logical font that can be baked at multiple sizes (see ImFontBaked via {@code getFontBaked}).
  *
@@ -9,6 +14,7 @@ import imgui.binding.ImGuiStructDestroyable;
  * while size-specific data (glyphs, ascent/descent, character metrics) lives on {@code ImFontBaked}.
  * Many previously-exposed fields moved there and are no longer reachable through {@code ImFont}.
  */
+
 public final class ImFont extends ImGuiStructDestroyable {
     public ImFont() {
         super();
@@ -32,7 +38,7 @@ public final class ImFont extends ImGuiStructDestroyable {
         return (uintptr_t)(new ImFont());
     */
 
-    /**
+     /**
      * Font size passed to {@code AddFontXXX()}. Use for legacy code calling {@link imgui.ImGui#pushFont(ImFont, float)}
      * that expected the original size (use {@code ImGui::GetFontBaked()} in new code).
      */
@@ -56,7 +62,7 @@ public final class ImFont extends ImGuiStructDestroyable {
         THIS->LegacySize = value;
     */
 
-    /**
+     /**
      * Character used for ellipsis rendering.
      */
     public short getEllipsisChar() {
@@ -78,7 +84,7 @@ public final class ImFont extends ImGuiStructDestroyable {
         THIS->EllipsisChar = value;
     */
 
-    /**
+     /**
      * Character used if a glyph isn't found (U+FFFD, '?').
      */
     public short getFallbackChar() {
@@ -100,7 +106,7 @@ public final class ImFont extends ImGuiStructDestroyable {
         THIS->FallbackChar = value;
     */
 
-    /**
+     /**
      * Legacy base font scale (~1.0f), multiplied by the per-window font scale which you can adjust with SetWindowFontScale().
      * Obsolete since 1.92; kept behind {@code IMGUI_DISABLE_OBSOLETE_FUNCTIONS}.
      */
@@ -142,7 +148,7 @@ public final class ImFont extends ImGuiStructDestroyable {
         return env->NewStringUTF(THIS->GetDebugName());
     */
 
-    /**
+     /**
      * 'max_width' stops rendering after a certain width (could be turned into a 2d size). FLT_MAX to disable.
      * 'wrap_width' enable automatic word-wrapping across multiple lines to fit into given width. 0.0f to disable.
      */
@@ -256,7 +262,7 @@ public final class ImFont extends ImGuiStructDestroyable {
         return _result;
     */
 
-    /**
+     /**
      *
      * @deprecated since imgui 1.92; prefer {@code CalcWordWrapPosition(size, ...)}. This overload is kept as a
     legacy redirect; internally it passes {@code LegacySize * scale} as the size.
@@ -288,7 +294,7 @@ public final class ImFont extends ImGuiStructDestroyable {
         THIS->RenderChar(reinterpret_cast<ImDrawList*>(drawList), size, pos, col, (ImWchar)c);
     */
 
-    /**
+     /**
      * The {@code flags} parameter is {@code ImDrawTextFlags} (since imgui 1.92; previously a {@code bool cpu_fine_clip}).
      */
     public void renderText(final ImDrawList drawList, final float size, final ImVec2 pos, final int col, final ImVec4 clipRect, final String textBegin, final String textEnd) {

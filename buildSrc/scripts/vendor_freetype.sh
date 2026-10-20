@@ -79,7 +79,9 @@ mkdir -p lib tmp
 # Determine build process based on vendor type
 case "$VTYPE" in
     windows)
-        build_freetype "" "--host=x86_64-w64-mingw32 --prefix=/usr/x86_64-w64-mingw32" "lib/libfreetype.a"
+        # Explicit build/host distinction also matters when Cygwin can execute the Windows target.
+        # apinames must be a build-host tool so it understands the build system's file paths.
+        build_freetype "" "--build=$(./builds/unix/config.guess) --host=x86_64-w64-mingw32 --prefix=/usr/x86_64-w64-mingw32" "lib/libfreetype.a"
         ;;
     linux)
         build_freetype "-fPIC" "" "lib/libfreetype.a"
