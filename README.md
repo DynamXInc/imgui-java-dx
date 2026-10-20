@@ -16,19 +16,20 @@ Tracks **Dear ImGui v1.92.7** (docking branch).
 
 ---
 
-## BetterLights local fork
+## DynamX fork
 
-This independent checkout is based on upstream
+Source: https://github.com/DynamXInc/imgui-java-dx, branch `dx`, based on upstream
 [v1.92.7.1](https://github.com/SpaiR/imgui-java/releases/tag/v1.92.7.1), with Dear ImGui
 pinned at `b1bcb12a624af7509894c8e77dd47416997777fa` (1.92.7 docking).
-It is **not a published GitHub fork or Maven Central release**.
+Its artifacts are on no hosted Maven repository: the commands below build them into this
+checkout's `build/maven/` repository.
 
-BetterLights consumes the matched `dz.betterlights.imgui` artifacts
-`imgui-java-binding`, `imgui-java-lwjgl3`, `imgui-java-natives-windows` and
-`imgui-java-natives-linux`, all version **`1.92.7.1-bl.2`**, from this checkout's
-`build/maven/` repository. Its `imguiForkRepository` Gradle property can override the
-default sibling path. The binding still targets Java 8. BetterLights excludes the
-backend module's transitive LWJGL dependencies and retains Minecraft's LWJGL 3.3.3.
+[DXEditor](https://github.com/DynamXInc/DXEditor) and BetterLights consume the matched
+`dz.betterlights.imgui` artifacts `imgui-java-binding`, `imgui-java-lwjgl3`,
+`imgui-java-natives-windows` and `imgui-java-natives-linux`, all version **`1.92.7.1-bl.2`**,
+from that repository. They look for it at `../imgui-java-betterlights/build/maven`; their
+`imguiForkRepository` Gradle property overrides the path. The binding still targets Java 8.
+Consumers exclude the backend module's transitive LWJGL dependencies and keep Minecraft's LWJGL.
 Windows x64 and Linux x64 are built and exercised here; macOS and the app module are
 not part of this delivery. The sections below this fork section describe upstream
 APIs/distribution; their `io.github.spair` examples are not fork coordinates.
@@ -109,22 +110,22 @@ The DLL output is `imgui-binding/build/libsNative/windows64/imgui-java64.dll`;
 
 Built 2026-10-06 in WSL Ubuntu 20.04 (GCC 9.4, glibc 2.31) from the same sources as the
 bl.2 Windows DLL. The `.so` needs glibc 2.29 and GLIBCXX 3.4.21 at runtime, FreeType
-is static. Two scripts live in `H:\Developpement\.gradle-imgui-betterlights\tools\linux\`:
+is static. Two scripts live in `buildSrc/scripts/linux/`:
 
-- `build-linux-native.sh`: fetches Temurin 17 and Ant 1.10.15 into `~/bl-tools` once,
-  rsyncs this checkout to `~/bl-imgui-linux` (ext4; `build/`, `.gradle/`, `bin/`
+- `build-linux-native.sh`: fetches Temurin 17 and Ant 1.10.15 into `~/imgui-java-dx-tools` once,
+  rsyncs the checkout it lives in to `~/imgui-java-dx-linux` (ext4; `build/`, `.gradle/`, `bin/`
   excluded), runs `vendor_freetype.sh linux`, `generateLibs -Denvs=linux -Dlocal=true
   -Dfreetype=true` and publishes `imgui-java-natives-linux` into the copy's `build/maven`.
   It exports `GIT_CONFIG_PARAMETERS` with `core.autocrlf=true` because the Windows
   checkout is CRLF through Git for Windows' system config: without it the idempotent
   vendor-patch checks cannot see the already-applied patches.
-- `test-linux-native.sh`: the CPU-only JNI font regressions below, with the published
-  bl.2 binding jar and the new Linux natives jar.
+- `test-linux-native.sh <font.ttf>`: the CPU-only JNI font regressions below, with this
+  checkout's published binding jar and the new Linux natives jar.
 
 ```bat
-wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/.gradle-imgui-betterlights/tools/linux/build-linux-native.sh
-wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/.gradle-imgui-betterlights/tools/linux/test-linux-native.sh
-wsl.exe -d Ubuntu -e bash -lc "cp -r ~/bl-imgui-linux/build/maven/dz/betterlights/imgui/imgui-java-natives-linux /mnt/h/Developpement/imgui-java-betterlights/build/maven/dz/betterlights/imgui/"
+wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/imgui-java-betterlights/buildSrc/scripts/linux/build-linux-native.sh
+wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/imgui-java-betterlights/buildSrc/scripts/linux/test-linux-native.sh /mnt/h/Developpement/BetterLights-1.20/libs/editor-core/src/main/resources/assets/dxeditor/fonts/inter.ttf
+wsl.exe -d Ubuntu -e bash -lc "cp -r ~/imgui-java-dx-linux/build/maven/dz/betterlights/imgui/imgui-java-natives-linux /mnt/h/Developpement/imgui-java-betterlights/build/maven/dz/betterlights/imgui/"
 ```
 
 bl.2 Linux results: font stack **546 checks PASS**, ownership **88 checks/17 cases
@@ -157,7 +158,7 @@ set "NATIVES=build\maven\dz\betterlights\imgui\imgui-java-natives-windows\1.92.7
 mkdir build\font-regression
 javac --release 8 -cp "%BINDING%" -d build\font-regression imgui-binding\src\test\java\imgui\FontApiRegression.java imgui-binding\src\test\java\imgui\FontMemoryRegression.java
 java -cp "%BINDING%;%NATIVES%;build\font-regression" imgui.FontApiRegression
-java -cp "%BINDING%;%NATIVES%;build\font-regression" imgui.FontMemoryRegression ..\BetterLights-1.20\src\main\resources\assets\betterlightsmod\fonts\inter.ttf
+java -cp "%BINDING%;%NATIVES%;build\font-regression" imgui.FontMemoryRegression ..\BetterLights-1.20\libs\editor-core\src\main\resources\assets\dxeditor\fonts\inter.ttf
 ```
 
 bl.2 results: font stack **546 checks PASS**, ownership **88 checks/17 cases PASS**,
