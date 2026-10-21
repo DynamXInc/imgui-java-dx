@@ -45,5 +45,5 @@ ls -la "$LIB"
 
 echo "== publish imgui-java-natives-linux"
 ./gradlew :imgui-binding-natives:publishImguiPublicationToLocalForkRepository -PdeployType=linux -PnativeDir="$LIB" --console=plain --no-daemon
-ls -la build/maven/dz/betterlights/imgui/imgui-java-natives-linux/*/
+ls -la build/maven/dz/dynamx/imgui/imgui-java-natives-linux/*/
 echo "== DONE"

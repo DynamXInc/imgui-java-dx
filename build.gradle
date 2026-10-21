@@ -12,8 +12,8 @@ def gitRevProvider = providers.exec {
 }.standardOutput.asText.map { it.trim() }.orElse('unknown')
 
 allprojects {
-    group = 'dz.betterlights.imgui'
-    version = '1.92.7.1-bl.2'
+    group = 'dz.dynamx.imgui'
+    version = '1.92.7.1-bl.3'
 
     repositories {
         mavenCentral()

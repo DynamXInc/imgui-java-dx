@@ -5,8 +5,9 @@ set -euo pipefail
 FONT=${1:?usage: test-linux-native.sh <TrueType font file, e.g. assets/dxeditor/fonts/inter.ttf from DXEditor>}
 FORK=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 export JAVA_HOME=$HOME/imgui-java-dx-tools/jdk17 PATH=$HOME/imgui-java-dx-tools/jdk17/bin:$PATH
-BINDING=$FORK/build/maven/dz/betterlights/imgui/imgui-java-binding/1.92.7.1-bl.2/imgui-java-binding-1.92.7.1-bl.2.jar
-NATIVES=$HOME/imgui-java-dx-linux/build/maven/dz/betterlights/imgui/imgui-java-natives-linux/1.92.7.1-bl.2/imgui-java-natives-linux-1.92.7.1-bl.2.jar
+VERSION=$(sed -n "s/^ *version = '\([^']*\)'.*/\1/p" "$FORK/build.gradle" | head -n 1)
+BINDING=$FORK/build/maven/dz/dynamx/imgui/imgui-java-binding/$VERSION/imgui-java-binding-$VERSION.jar
+NATIVES=$HOME/imgui-java-dx-linux/build/maven/dz/dynamx/imgui/imgui-java-natives-linux/$VERSION/imgui-java-natives-linux-$VERSION.jar
 OUT=$(mktemp -d)
 TMP=$(mktemp -d)
 javac --release 8 -nowarn -cp "$BINDING" -d "$OUT" \

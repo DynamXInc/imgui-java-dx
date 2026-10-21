@@ -25,10 +25,12 @@ Its artifacts are on no hosted Maven repository: the commands below build them i
 checkout's `build/maven/` repository.
 
 [DXEditor](https://github.com/DynamXInc/DXEditor) and BetterLights consume the matched
-`dz.betterlights.imgui` artifacts `imgui-java-binding`, `imgui-java-lwjgl3`,
-`imgui-java-natives-windows` and `imgui-java-natives-linux`, all version **`1.92.7.1-bl.2`**,
-from that repository. They look for it at `../imgui-java-betterlights/build/maven`; their
-`imguiForkRepository` Gradle property overrides the path. The binding still targets Java 8.
+`dz.dynamx.imgui` artifacts `imgui-java-binding`, `imgui-java-lwjgl3`,
+`imgui-java-natives-windows` and `imgui-java-natives-linux`, all version **`1.92.7.1-bl.3`**,
+from that repository. bl.3 is bl.2 under the `dz.dynamx.imgui` group (bl.2 was
+`dz.betterlights.imgui`): same sources, same native binaries. Consumers look for the repository at
+`../imgui-java-betterlights/build/maven`; their `imguiForkRepository` Gradle property overrides the path.
+The binding still targets Java 8.
 Consumers exclude the backend module's transitive LWJGL dependencies and keep Minecraft's LWJGL.
 Windows x64 and Linux x64 are built and exercised here; macOS and the app module are
 not part of this delivery. The sections below this fork section describe upstream
@@ -125,7 +127,7 @@ is static. Two scripts live in `buildSrc/scripts/linux/`:
 ```bat
 wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/imgui-java-betterlights/buildSrc/scripts/linux/build-linux-native.sh
 wsl.exe -d Ubuntu -e bash /mnt/h/Developpement/imgui-java-betterlights/buildSrc/scripts/linux/test-linux-native.sh /mnt/h/Developpement/BetterLights-1.20/libs/editor-core/src/main/resources/assets/dxeditor/fonts/inter.ttf
-wsl.exe -d Ubuntu -e bash -lc "cp -r ~/imgui-java-dx-linux/build/maven/dz/betterlights/imgui/imgui-java-natives-linux /mnt/h/Developpement/imgui-java-betterlights/build/maven/dz/betterlights/imgui/"
+wsl.exe -d Ubuntu -e bash -lc "cp -r ~/imgui-java-dx-linux/build/maven/dz/dynamx/imgui/imgui-java-natives-linux /mnt/h/Developpement/imgui-java-betterlights/build/maven/dz/dynamx/imgui/"
 ```
 
 bl.2 Linux results: font stack **546 checks PASS**, ownership **88 checks/17 cases
@@ -153,8 +155,8 @@ override), embedded fonts for stack behavior, and a supplied TrueType font for
 byte/range poisoning, config reuse and standalone/shared-atlas lifetimes:
 
 ```bat
-set "BINDING=build\maven\dz\betterlights\imgui\imgui-java-binding\1.92.7.1-bl.2\imgui-java-binding-1.92.7.1-bl.2.jar"
-set "NATIVES=build\maven\dz\betterlights\imgui\imgui-java-natives-windows\1.92.7.1-bl.2\imgui-java-natives-windows-1.92.7.1-bl.2.jar"
+set "BINDING=build\maven\dz\dynamx\imgui\imgui-java-binding\1.92.7.1-bl.3\imgui-java-binding-1.92.7.1-bl.3.jar"
+set "NATIVES=build\maven\dz\dynamx\imgui\imgui-java-natives-windows\1.92.7.1-bl.3\imgui-java-natives-windows-1.92.7.1-bl.3.jar"
 mkdir build\font-regression
 javac --release 8 -cp "%BINDING%" -d build\font-regression imgui-binding\src\test\java\imgui\FontApiRegression.java imgui-binding\src\test\java\imgui\FontMemoryRegression.java
 java -cp "%BINDING%;%NATIVES%;build\font-regression" imgui.FontApiRegression
