@@ -21,15 +21,15 @@ Tracks **Dear ImGui v1.92.7** (docking branch).
 Source: https://github.com/DynamXInc/imgui-java-dx, branch `dx`, based on upstream
 [v1.92.7.1](https://github.com/SpaiR/imgui-java/releases/tag/v1.92.7.1), with Dear ImGui
 pinned at `b1bcb12a624af7509894c8e77dd47416997777fa` (1.92.7 docking).
-Its artifacts are on no hosted Maven repository: the commands below build them into this
-checkout's `build/maven/` repository.
+Its artifacts are hosted on the DynamX Maven repository, `https://maven.dynamx.fr/artifactory/DynamXRepo`
+(anonymous read).
 
 [DXEditor](https://github.com/DynamXInc/DXEditor) and BetterLights consume the matched
 `dz.dynamx.imgui` artifacts `imgui-java-binding`, `imgui-java-lwjgl3`,
 `imgui-java-natives-windows` and `imgui-java-natives-linux`, all version **`1.92.7.1-bl.3`**,
 from that repository. bl.3 is bl.2 under the `dz.dynamx.imgui` group (bl.2 was
-`dz.betterlights.imgui`): same sources, same native binaries. Consumers look for the repository at
-`../imgui-java-betterlights/build/maven`; their `imguiForkRepository` Gradle property overrides the path.
+`dz.betterlights.imgui`): same sources, same native binaries. Their `imguiForkRepository` Gradle property points
+them at a local build instead (this checkout's `build/maven/`).
 The binding still targets Java 8.
 Consumers exclude the backend module's transitive LWJGL dependencies and keep Minecraft's LWJGL.
 Windows x64 and Linux x64 are built and exercised here; macOS and the app module are
@@ -107,6 +107,11 @@ The explicit Bash path avoids the workstation's broken System32 WSL launcher.
 The optional read-only dependency cache names `caches`, not `caches/modules-2`.
 The DLL output is `imgui-binding/build/libsNative/windows64/imgui-java64.dll`;
 `nativeDir` must point there, not the upstream default `bin/`.
+
+To release, bump `version` in `build.gradle`, then publish the same three projects (and the Linux natives) to the
+`dynamx` repository instead of `LocalFork` (`publishImguiPublicationToDynamxRepository`), with the Gradle properties
+`dynamxUsername` and `dynamxPassword` set in `~/.gradle/gradle.properties`. A published version is never
+overwritten.
 
 ### Reproduced Linux build (WSL)
 
